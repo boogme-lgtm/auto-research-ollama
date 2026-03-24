@@ -236,36 +236,51 @@ def best_score(results: list[dict]) -> float:
 # LLM prompting
 # ─────────────────────────────────────────────
 
-SYSTEM_PROMPT = """You are an expert quantitative trading researcher specializing in crypto perpetual futures strategy development.
+SYSTEM_PROMPT = """You are an expert quantitative trading researcher for crypto perpetual futures.
 
-You are running an autonomous experiment loop on Hyperliquid perp data (BTC, ETH, SOL, hourly bars, Jul 2024 - Mar 2025).
+You will be shown the current parameter values of a trading strategy and recent experiment history.
+Your job: propose ONE parameter change that will improve the Sharpe-based score.
 
-Your job:
-1. Read the current strategy.py
-2. Propose ONE focused modification to improve the score
-3. Output ONLY the complete new strategy.py content — nothing else
+Scoring: score = sharpe * sqrt(min(trades/50,1)) - max(0,drawdown-15)*0.05
+Hard cutoffs: <10 trades = -999, >50% drawdown = -999
 
-Rules:
-- Only modify strategy.py — this is the single mutable file
-- Do NOT modify prepare.py, backtest.py, or benchmarks/
-- Only use: numpy, pandas, scipy, requests, pyarrow, and stdlib
-- Each experiment = one focused change (not a complete rewrite)
-- Think step by step about WHY your change should improve the Sharpe ratio
+Key lessons:
+- RSI period 8 beats 14 for hourly crypto
+- ATR stop 5.5x beats 3.5x
+- Uniform position sizing beats momentum-weighted
+- Simplicity wins
 
-The scoring formula:
-  score = sharpe * sqrt(min(trades/50, 1.0)) - drawdown_penalty - turnover_penalty
-  drawdown_penalty = max(0, max_drawdown_pct - 15) * 0.05
-  turnover_penalty = max(0, annual_turnover/capital - 500) * 0.001
-  Hard cutoffs: <10 trades → -999, >50% drawdown → -999
+Output format — respond with ONLY a JSON object like this:
+{"param": "RSI_PERIOD", "old_value": 8, "new_value": 6, "reason": "shorter RSI more responsive"}
 
-Key lessons from 103 prior experiments:
-- Simplicity wins — removing complexity often improves score
-- RSI period 8 beats period 14 for hourly crypto
-- Uniform position sizing beats momentum-weighted sizing
-- ATR trailing stops at 5.5x beat conventional 3.5x
-- 6-signal ensemble with 4/6 majority vote is the current best architecture
+One JSON object only. No explanation. No markdown."""
 
-IMPORTANT: Output ONLY the raw Python code for strategy.py. No markdown, no explanation, no code fences. Start directly with the import statements or class definition."""
+
+def extract_params(strategy_code: str) -> dict:
+    """Extract all uppercase constant parameters from strategy.py."""
+    params = {}
+    for line in strategy_code.splitlines():
+        line = line.strip()
+        if '=' in line and not line.startswith('#') and not line.startswith('def') and not line.startswith('class'):
+            parts = line.split('=', 1)
+            name = parts[0].strip()
+            if name.isupper() and name.replace('_', '').isalpha():
+                try:
+                    val = eval(parts[1].strip().split('#')[0].strip())
+                    if isinstance(val, (int, float)):
+                        params[name] = val
+                except Exception:
+                    pass
+    return params
+
+
+def apply_param_change(strategy_code: str, param: str, new_value) -> str:
+    """Replace a parameter value in strategy.py."""
+    import re as _re
+    pattern = rf'^({_re.escape(param)}\s*=\s*)[^\n#]+(.*?)$'
+    replacement = rf'\g<1>{new_value}\g<2>'
+    new_code = _re.sub(pattern, replacement, strategy_code, flags=_re.MULTILINE)
+    return new_code
 
 
 def build_experiment_prompt(
@@ -274,33 +289,25 @@ def build_experiment_prompt(
     experiment_num: int,
     current_best: float,
 ) -> str:
-    recent = results_history[-10:] if len(results_history) > 10 else results_history
+    recent = results_history[-5:] if len(results_history) > 5 else results_history
     history_str = "\n".join(
-        f"  exp{i+1}: score={r['score']:.3f} sharpe={r['sharpe']:.3f} dd={r['max_dd']:.1f}% [{r['status']}] {r['description']}"
+        f"  exp{i+1}: score={r['score']:.3f} [{r['status']}] {r['description']}"
         for i, r in enumerate(recent)
     )
 
-    return f"""=== EXPERIMENT {experiment_num} ===
+    params = extract_params(strategy_code)
+    params_str = "\n".join(f"  {k} = {v}" for k, v in params.items())
 
-Current best score: {current_best:.3f}
-Baseline to beat: 2.724
+    return f"""Experiment {experiment_num} | Best score so far: {current_best:.3f}
 
-Recent experiment history (last {len(recent)}):
-{history_str if history_str else "  (no experiments yet — start from scratch)"}
+Current parameters:
+{params_str}
 
-Current strategy.py:
-```python
-{strategy_code}
-```
+Recent history:
+{history_str if history_str else "  (none yet)"}
 
-Propose and implement ONE focused modification to strategy.py that you believe will improve the score above {current_best:.3f}.
-
-Think carefully about:
-- What signal or parameter change is most likely to improve Sharpe?
-- Will this change increase or decrease trade count? (need >10 trades)
-- Will this change increase drawdown? (keep below 50%)
-
-Output ONLY the complete new strategy.py Python code. No explanation. No markdown fences."""
+Propose ONE parameter change to beat score {current_best:.3f}.
+Output ONLY a JSON object: {{"param": "NAME", "old_value": X, "new_value": Y, "reason": "brief reason"}}"""
 
 
 def extract_python_code(response: str) -> str:
@@ -448,21 +455,42 @@ def main():
             time.sleep(5)
             continue
 
-        # Extract Python code
-        new_strategy = extract_python_code(response)
+        # Parse JSON param change from response
+        response_clean = re.sub(r"<think>.*?</think>", "", response, flags=re.DOTALL).strip()
+        # Extract JSON object from response
+        json_match = re.search(r'\{[^{}]+\}', response_clean, re.DOTALL)
+        if not json_match:
+            print(f"[WARNING] LLM did not return valid JSON. Response: {response_clean[:200]}")
+            consecutive_failures += 1
+            continue
 
-        if len(new_strategy) < 100:
-            print(f"[WARNING] LLM returned suspiciously short code ({len(new_strategy)} chars). Skipping.")
+        try:
+            change = json.loads(json_match.group())
+            param = change["param"]
+            new_value = change["new_value"]
+            reason = change.get("reason", "no reason given")
+        except (json.JSONDecodeError, KeyError) as e:
+            print(f"[WARNING] Could not parse param change: {e}. Response: {response_clean[:200]}")
             consecutive_failures += 1
             continue
 
         consecutive_failures = 0
 
+        # Apply the parameter change to strategy.py
+        current_strategy = Path(STRATEGY_FILE).read_text()
+        new_strategy = apply_param_change(current_strategy, param, new_value)
+
+        if new_strategy == current_strategy:
+            print(f"[WARNING] Parameter '{param}' not found in strategy.py. Skipping.")
+            consecutive_failures += 1
+            continue
+
+        print(f"Changing {param}: {change.get('old_value', '?')} → {new_value} ({reason})")
+
         # Write new strategy
         Path(STRATEGY_FILE).write_text(new_strategy)
 
-        # Get a short description for the commit
-        description = get_commit_description(new_strategy, args.model, args.ollama_url)
+        description = f"{param}={new_value} ({reason[:50]})"
         commit_msg = f"exp{experiment_num}: {description}"
 
         # Commit
