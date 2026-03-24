@@ -5,41 +5,55 @@ This file is fixed — do not modify.
 """
 
 import time
-import signal as sig
+import multiprocessing
+import sys
 
 from prepare import load_data, run_backtest, compute_score, TIME_BUDGET
 
-# Timeout guard
-def timeout_handler(signum, frame):
-    print("TIMEOUT: backtest exceeded time budget")
-    exit(1)
+def run_backtest_process():
+    """The actual backtest logic, designed to be run in a separate process."""
+    t_start = time.time()
 
-sig.signal(sig.SIGALRM, timeout_handler)
-sig.alarm(TIME_BUDGET + 30)  # 30s grace for startup
+    # Import strategy inside the function to avoid issues with multiprocessing
+    from strategy import Strategy
 
-t_start = time.time()
+    strategy = Strategy()
+    data = load_data("val")
 
-from strategy import Strategy
+    print(f"Loaded {sum(len(df) for df in data.values())} bars across {len(data)} symbols")
+    print(f"Symbols: {list(data.keys())}")
 
-strategy = Strategy()
-data = load_data("val")
+    result = run_backtest(strategy, data)
+    score = compute_score(result)
 
-print(f"Loaded {sum(len(df) for df in data.values())} bars across {len(data)} symbols")
-print(f"Symbols: {list(data.keys())}")
+    t_end = time.time()
 
-result = run_backtest(strategy, data)
-score = compute_score(result)
+    print("---")
+    print(f"score:              {score:.6f}")
+    print(f"sharpe:             {result.sharpe:.6f}")
+    print(f"total_return_pct:   {result.total_return_pct:.6f}")
+    print(f"max_drawdown_pct:   {result.max_drawdown_pct:.6f}")
+    print(f"num_trades:         {result.num_trades}")
+    print(f"win_rate_pct:       {result.win_rate_pct:.6f}")
+    print(f"profit_factor:      {result.profit_factor:.6f}")
+    print(f"annual_turnover:    {result.annual_turnover:.2f}")
+    print(f"backtest_seconds:   {result.backtest_seconds:.1f}")
+    print(f"total_seconds:      {t_end - t_start:.1f}")
 
-t_end = time.time()
+if __name__ == '__main__':
+    # Use multiprocessing for a cross-platform timeout, since signal.SIGALRM is not available on Windows.
+    process = multiprocessing.Process(target=run_backtest_process)
+    process.start()
 
-print("---")
-print(f"score:              {score:.6f}")
-print(f"sharpe:             {result.sharpe:.6f}")
-print(f"total_return_pct:   {result.total_return_pct:.6f}")
-print(f"max_drawdown_pct:   {result.max_drawdown_pct:.6f}")
-print(f"num_trades:         {result.num_trades}")
-print(f"win_rate_pct:       {result.win_rate_pct:.6f}")
-print(f"profit_factor:      {result.profit_factor:.6f}")
-print(f"annual_turnover:    {result.annual_turnover:.2f}")
-print(f"backtest_seconds:   {result.backtest_seconds:.1f}")
-print(f"total_seconds:      {t_end - t_start:.1f}")
+    # Wait for the process to complete, with a timeout
+    process.join(TIME_BUDGET + 30)  # 30s grace period for startup
+
+    if process.is_alive():
+        print("TIMEOUT: backtest exceeded time budget")
+        process.terminate()
+        process.join()
+        sys.exit(1)
+
+    if process.exitcode != 0:
+        print(f"Backtest process failed with exit code {process.exitcode}")
+        sys.exit(process.exitcode)
