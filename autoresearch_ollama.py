@@ -130,7 +130,29 @@ def git_commit(message: str) -> str:
 
 
 def git_reset_hard() -> None:
-    subprocess.run(["git", "reset", "--hard", "HEAD~1"], check=True)
+    """
+    Revert only strategy.py to the previous commit's version.
+    We do NOT use `git reset --hard HEAD~1` because that would also revert
+    backtest.py and autoresearch_ollama.py to older (buggy) versions.
+    Instead: undo the last commit while keeping the working tree, then
+    restore only strategy.py from the pre-commit state.
+    """
+    # Check if there is a parent commit at all
+    result = subprocess.run(
+        ["git", "rev-parse", "--verify", "HEAD~1"],
+        capture_output=True, text=True
+    )
+    if result.returncode != 0:
+        # No parent commit — just restore strategy.py from HEAD (current commit)
+        subprocess.run(["git", "checkout", "HEAD", "--", STRATEGY_FILE], check=True)
+        return
+
+    # Soft-reset: move HEAD back one commit but keep working tree
+    subprocess.run(["git", "reset", "--soft", "HEAD~1"], check=True)
+    # Restore strategy.py to the version from the new HEAD (i.e. the previous commit)
+    subprocess.run(["git", "checkout", "HEAD", "--", STRATEGY_FILE], check=True)
+    # Unstage the change so the working tree is clean
+    subprocess.run(["git", "reset", "HEAD", "--", STRATEGY_FILE], check=False)
 
 
 def git_diff_strategy() -> str:
