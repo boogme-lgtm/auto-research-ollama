@@ -52,7 +52,8 @@ def ollama_chat(messages: list[dict], model: str, base_url: str, temperature: fl
         "stream": False,
         "options": {
             "temperature": temperature,
-            "num_ctx": 16384,
+            "num_ctx": 4096,
+            "num_predict": 2048,
         },
     }
     try:
