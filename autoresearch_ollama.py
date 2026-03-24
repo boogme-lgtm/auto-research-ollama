@@ -56,7 +56,7 @@ def ollama_chat(messages: list[dict], model: str, base_url: str, temperature: fl
         },
     }
     try:
-        resp = requests.post(url, json=payload, timeout=300)
+        resp = requests.post(url, json=payload, timeout=600)
         resp.raise_for_status()
         data = resp.json()
         return data["message"]["content"]
@@ -85,6 +85,24 @@ def check_ollama(base_url: str, model: str) -> bool:
         return True
     except Exception:
         return False
+
+
+def warmup_model(base_url: str, model: str) -> None:
+    """Send a tiny request to load the model into VRAM before the main loop."""
+    print(f"Warming up model '{model}' (loading into GPU memory)...")
+    try:
+        url = f"{base_url}/api/chat"
+        payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": "hi"}],
+            "stream": False,
+            "options": {"num_ctx": 512},
+        }
+        resp = requests.post(url, json=payload, timeout=600)
+        resp.raise_for_status()
+        print(f"✓ Model loaded and ready")
+    except Exception as e:
+        print(f"[WARNING] Warmup failed: {e} — will retry on first experiment")
 
 
 # ─────────────────────────────────────────────
@@ -346,6 +364,10 @@ def main():
         print(f"  ollama pull {args.model}")
         sys.exit(1)
     print(f"✓ Ollama connected, model '{args.model}' available\n")
+
+    # Warm up the model (load into VRAM before the loop starts)
+    warmup_model(args.ollama_url, args.model)
+    print()
 
     # Check we're in the right directory
     if not Path(STRATEGY_FILE).exists():
