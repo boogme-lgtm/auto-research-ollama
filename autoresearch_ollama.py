@@ -127,11 +127,22 @@ def git_diff_strategy() -> str:
 # Backtest runner
 # ─────────────────────────────────────────────
 
+def get_python_cmd() -> list[str]:
+    """Return the right command to run backtest.py on this platform."""
+    import shutil
+    if shutil.which("uv"):
+        return ["uv", "run", "backtest.py"]
+    # Fall back to plain python
+    python = shutil.which("python") or shutil.which("python3") or sys.executable
+    return [python, "backtest.py"]
+
+
 def run_backtest() -> dict | None:
     """Run the backtest and parse the results. Returns None on crash."""
+    cmd = get_python_cmd()
     with open(RUN_LOG, "w") as f:
         result = subprocess.run(
-            ["uv", "run", "backtest.py"],
+            cmd,
             stdout=f, stderr=f,
             timeout=180
         )
