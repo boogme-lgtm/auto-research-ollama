@@ -159,12 +159,22 @@ def get_python_cmd() -> list[str]:
 def run_backtest() -> dict | None:
     """Run the backtest and parse the results. Returns None on crash."""
     cmd = get_python_cmd()
-    with open(RUN_LOG, "w") as f:
-        result = subprocess.run(
-            cmd,
-            stdout=f, stderr=f,
-            timeout=180
-        )
+    # TIME_BUDGET in prepare.py is 120s; we give 60s extra grace for startup/import overhead.
+    # subprocess.run timeout is the hard wall — kills the process if it hangs.
+    BACKTEST_TIMEOUT = 180
+    try:
+        with open(RUN_LOG, "w") as f:
+            subprocess.run(
+                cmd,
+                stdout=f, stderr=f,
+                timeout=BACKTEST_TIMEOUT
+            )
+    except subprocess.TimeoutExpired:
+        with open(RUN_LOG, "a") as f:
+            f.write("\nTIMEOUT: backtest exceeded hard wall\n")
+        return {"crashed": True, "log_tail": "TIMEOUT: backtest exceeded hard wall"}
+    except Exception as e:
+        return {"crashed": True, "log_tail": str(e)}
 
     with open(RUN_LOG) as f:
         log = f.read()
