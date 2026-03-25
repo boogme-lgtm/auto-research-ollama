@@ -34,7 +34,7 @@ import requests
 
 DEFAULT_MODEL = "deepseek-r1:14b"
 DEFAULT_OLLAMA_URL = "http://localhost:11434"
-DEFAULT_MAX_EXPERIMENTS = 500
+DEFAULT_MAX_EXPERIMENTS = 50000
 RESULTS_FILE = "results.tsv"
 STRATEGY_FILE = "strategy.py"
 RUN_LOG = "run.log"
